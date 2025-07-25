@@ -1,0 +1,74 @@
+# CFSSL Certificate Authority Role Defaults
+
+# CFSSL version and installation
+cfssl_version: "1.6.4"
+cfssl_install_dir: "/usr/local/bin"
+cfssl_config_dir: "/etc/cfssl"
+cfssl_data_dir: "/var/lib/cfssl"
+cfssl_log_dir: "/var/log/cfssl"
+
+# CA Configuration
+ca_common_name: "SWN Lab Root CA"
+ca_organization: "SWN Lab"
+ca_organizational_unit: "HOME LAB"
+ca_country: "CA"
+ca_state: "Ontario"
+ca_locality: "Toronto"
+ca_expiry: "87600h" # 10 years
+ca_key_algorithm: "rsa"
+ca_key_size: 4096
+
+# Intermediate CA Configuration
+intermediate_ca_common_name: "SWN Lab Intermediate CA"
+intermediate_ca_expiry: "43800h" # 5 years
+
+# CFSSL API Server Configuration
+cfssl_api_enabled: true
+cfssl_api_port: 8888
+cfssl_api_bind_address: "127.0.0.1"
+cfssl_api_log_level: "info"
+
+# Certificate profiles
+cfssl_profiles:
+  intermediate:
+    expiry: "43800h" # 5 years
+    usages:
+      - "signing"
+      - "key encipherment"
+      - "cert sign"
+      - "crl sign"
+    ca_constraint:
+      is_ca: true
+      max_path_len: 0
+  server:
+    expiry: "8760h" # 1 year
+    usages:
+      - "signing"
+      - "key encipherment"
+      - "server auth"
+  client:
+    expiry: "8760h" # 1 year
+    usages:
+      - "digital signature" # Required by AWS IAM Roles Anywhere
+      - "key encipherment"
+      - "client auth"
+    ca_constraint:
+      is_ca: false
+      max_path_len: 0
+  peer:
+    expiry: "8760h" # 1 year
+    usages:
+      - "signing"
+      - "key encipherment"
+      - "server auth"
+      - "client auth"
+
+# Service configuration
+cfssl_service_enabled: true
+cfssl_service_state: started
+
+# Security settings
+cfssl_user: "cfssl"
+cfssl_group: "cfssl"
+cfssl_file_mode: "0600"
+cfssl_dir_mode: "0700"

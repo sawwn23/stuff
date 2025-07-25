@@ -1,0 +1,176 @@
+---
+- name: Create cfssl user and group
+  group:
+    name: "{{ cfssl_group }}"
+    state: present
+
+- name: Create cfssl user
+  user:
+    name: "{{ cfssl_user }}"
+    group: "{{ cfssl_group }}"
+    system: yes
+    shell: /bin/false
+    home: "{{ cfssl_data_dir }}"
+    create_home: no
+    state: present
+
+- name: Install required packages
+  apt:
+    name:
+      - wget
+      - curl
+      - jq
+      - openssl
+    state: present
+    update_cache: yes
+
+- name: Create cfssl directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cfssl_user }}"
+    group: "{{ cfssl_group }}"
+    mode: "{{ cfssl_dir_mode }}"
+  loop:
+    - "{{ cfssl_config_dir }}"
+    - "{{ cfssl_data_dir }}"
+    - "{{ cfssl_log_dir }}"
+
+- name: Check if cfssl binary exists
+  stat:
+    path: "{{ cfssl_install_dir }}/cfssl"
+  register: cfssl_binary
+
+- name: Download cfssl binaries
+  get_url:
+    url: "https://github.com/cloudflare/cfssl/releases/download/v{{ cfssl_version }}/{{ item }}_{{ cfssl_version }}_linux_amd64"
+    dest: "{{ cfssl_install_dir }}/{{ item }}"
+    mode: "0755"
+    owner: root
+    group: root
+  loop:
+    - cfssl
+    - cfssljson
+    - cfssl-certinfo
+  when: not cfssl_binary.stat.exists
+
+- name: Create CA configuration file
+  template:
+    src: ca-config.json.j2
+    dest: "{{ cfssl_config_dir }}/ca-config.json"
+    owner: "{{ cfssl_user }}"
+    group: "{{ cfssl_group }}"
+    mode: "{{ cfssl_file_mode }}"
+  notify: restart cfssl
+
+- name: Create CA CSR configuration
+  template:
+    src: ca-csr.json.j2
+    dest: "{{ cfssl_config_dir }}/ca-csr.json"
+    owner: "{{ cfssl_user }}"
+    group: "{{ cfssl_group }}"
+    mode: "{{ cfssl_file_mode }}"
+
+- name: Check if CA certificate exists
+  stat:
+    path: "{{ cfssl_data_dir }}/ca.pem"
+  register: ca_cert
+
+- name: Generate CA certificate and key
+  shell: |
+    cd {{ cfssl_data_dir }}
+    {{ cfssl_install_dir }}/cfssl gencert -initca {{ cfssl_config_dir }}/ca-csr.json | {{ cfssl_install_dir }}/cfssljson -bare ca
+  become_user: "{{ cfssl_user }}"
+  when: not ca_cert.stat.exists
+  notify: restart cfssl
+
+- name: Set proper permissions on CA files
+  file:
+    path: "{{ cfssl_data_dir }}/{{ item }}"
+    owner: "{{ cfssl_user }}"
+    group: "{{ cfssl_group }}"
+    mode: "{{ cfssl_file_mode }}"
+  loop:
+    - ca.pem
+    - ca-key.pem
+    - ca.csr
+  when: not ca_cert.stat.exists
+
+- name: Create intermediate CA CSR configuration
+  template:
+    src: intermediate-csr.json.j2
+    dest: "{{ cfssl_config_dir }}/intermediate-csr.json"
+    owner: "{{ cfssl_user }}"
+    group: "{{ cfssl_group }}"
+    mode: "{{ cfssl_file_mode }}"
+
+- name: Check if intermediate CA certificate exists
+  stat:
+    path: "{{ cfssl_data_dir }}/intermediate.pem"
+  register: intermediate_cert
+
+- name: Generate intermediate CA CSR and key
+  shell: |
+    cd {{ cfssl_data_dir }}
+    {{ cfssl_install_dir }}/cfssl genkey {{ cfssl_config_dir }}/intermediate-csr.json | {{ cfssl_install_dir }}/cfssljson -bare intermediate
+  become_user: "{{ cfssl_user }}"
+  when: not intermediate_cert.stat.exists
+
+- name: Sign intermediate CA with root CA
+  shell: |
+    cd {{ cfssl_data_dir }}
+    {{ cfssl_install_dir }}/cfssl sign -ca ca.pem -ca-key ca-key.pem -config {{ cfssl_config_dir }}/ca-config.json -profile intermediate intermediate.csr | {{ cfssl_install_dir }}/cfssljson -bare intermediate
+  become_user: "{{ cfssl_user }}"
+  when: not intermediate_cert.stat.exists
+  notify: restart cfssl
+
+- name: Create cfssl systemd service file
+  template:
+    src: cfssl.service.j2
+    dest: /etc/systemd/system/cfssl.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart cfssl
+  when: cfssl_api_enabled
+
+- name: Create cfssl environment file
+  template:
+    src: cfssl.env.j2
+    dest: /etc/default/cfssl
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart cfssl
+  when: cfssl_api_enabled
+
+- name: Enable and start cfssl service
+  systemd:
+    name: cfssl
+    enabled: "{{ cfssl_service_enabled }}"
+    state: "{{ cfssl_service_state }}"
+    daemon_reload: yes
+  when: cfssl_api_enabled
+
+- name: Wait for cfssl API to be available
+  wait_for:
+    port: "{{ cfssl_api_port }}"
+    host: "{{ cfssl_api_bind_address }}"
+    delay: 5
+    timeout: 30
+  when: cfssl_api_enabled and cfssl_service_state == "started"
+
+- name: Display CA certificate information
+  debug:
+    msg: |
+      CFSSL Certificate Authority has been installed and configured.
+
+      CA Certificate: {{ cfssl_data_dir }}/ca.pem
+      Intermediate CA: {{ cfssl_data_dir }}/intermediate.pem
+      {% if cfssl_api_enabled %}
+      API Server: http://{{ cfssl_api_bind_address }}:{{ cfssl_api_port }}
+      {% endif %}
+
+      To issue a certificate:
+      1. Create a CSR configuration file
+      2. Use: cfssl gencert -ca {{ cfssl_data_dir }}/intermediate.pem -ca-key {{ cfssl_data_dir }}/intermediate-key.pem -config {{ cfssl_config_dir }}/ca-config.json -profile server your-csr.json | cfssljson -bare your-cert

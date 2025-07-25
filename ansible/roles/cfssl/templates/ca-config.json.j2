@@ -1,0 +1,23 @@
+{
+  "signing": {
+    "default": {
+      "expiry": "{{ cfssl_profiles.server.expiry }}"
+    },
+    "profiles": {
+{% for profile_name, profile_config in cfssl_profiles.items() %}
+      "{{ profile_name }}": {
+        "expiry": "{{ profile_config.expiry }}",
+        "usages": [
+{% for usage in profile_config.usages %}
+          "{{ usage }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+        ]{% if profile_config.ca_constraint is defined %},
+        "ca_constraint": {
+          "is_ca": {{ profile_config.ca_constraint.is_ca | lower }},
+          "max_path_len": {{ profile_config.ca_constraint.max_path_len }}
+        }{% endif %}
+      }{% if not loop.last %},{% endif %}
+{% endfor %}
+    }
+  }
+}

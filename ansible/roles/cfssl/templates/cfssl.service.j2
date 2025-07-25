@@ -1,0 +1,29 @@
+[Unit]
+Description=CFSSL Certificate Authority API Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ cfssl_user }}
+Group={{ cfssl_group }}
+WorkingDirectory={{ cfssl_data_dir }}
+ExecStart={{ cfssl_install_dir }}/cfssl serve -address={{ cfssl_api_bind_address }} -port={{ cfssl_api_port }} -ca-key=intermediate-key.pem -ca=intermediate.pem -config={{ cfssl_config_dir }}/ca-config.json
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cfssl
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ cfssl_data_dir }} {{ cfssl_log_dir }}
+
+# Environment
+EnvironmentFile=-/etc/default/cfssl
+
+[Install]
+WantedBy=multi-user.target

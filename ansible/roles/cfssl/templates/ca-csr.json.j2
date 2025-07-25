@@ -1,0 +1,19 @@
+{
+  "CN": "{{ ca_common_name }}",
+  "key": {
+    "algo": "{{ ca_key_algorithm }}",
+    "size": {{ ca_key_size }}
+  },
+  "names": [
+    {
+      "C": "{{ ca_country }}",
+      "ST": "{{ ca_state }}",
+      "L": "{{ ca_locality }}",
+      "O": "{{ ca_organization }}",
+      "OU": "{{ ca_organizational_unit }}"
+    }
+  ],
+  "ca": {
+    "expiry": "{{ ca_expiry }}"
+  }
+}
