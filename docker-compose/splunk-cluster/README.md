@@ -111,12 +111,3 @@ docker-compose down --timeout 60
 # Send data to heavy forwarder
 echo "test log message" | nc localhost 1514
 ```
-
-#### Via HTTP Event Collector (HEC)
-
-```bash
-# HEC is enabled on port 8088 with token from default.yml
-curl -k "https://localhost:8088/services/collector" \
-  -H "Authorization: Splunk a6b3b08f-2244-412d-987e-8df78e2c73f0" \
-  -d '{"event": "test event"}'
-```
