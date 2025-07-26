@@ -17,31 +17,6 @@ services:
     environment:
       - SPLUNK_START_ARGS=--accept-license
       - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
-      - SPLUNK_CLUSTER_MASTER_URL=cm1
-      - SPLUNK_ROLE=splunk_search_head_captain
-      - SPLUNK_DEPLOYER_URL=dep1
-      - SPLUNK_PASSWORD
-    ports:
-      - 8000
-      - 8089
-    volumes:
-      - ./default.yml:/tmp/defaults/default.yml
-
-  sh2:
-    networks:
-      splunknet:
-        aliases:
-          - sh2
-    image: ${SPLUNK_IMAGE:-splunk/splunk:latest}
-    hostname: sh2
-    container_name: sh2
-    environment:
-      - SPLUNK_START_ARGS=--accept-license
-      - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
       - SPLUNK_CLUSTER_MASTER_URL=cm1
       - SPLUNK_ROLE=splunk_search_head
       - SPLUNK_DEPLOYER_URL=dep1
@@ -52,28 +27,51 @@ services:
     volumes:
       - ./default.yml:/tmp/defaults/default.yml
 
-  sh3:
-    networks:
-      splunknet:
-        aliases:
-          - sh3
-    image: ${SPLUNK_IMAGE:-splunk/splunk:latest}
-    hostname: sh3
-    container_name: sh3
-    environment:
-      - SPLUNK_START_ARGS=--accept-license
-      - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
-      - SPLUNK_CLUSTER_MASTER_URL=cm1
-      - SPLUNK_ROLE=splunk_search_head
-      - SPLUNK_DEPLOYER_URL=dep1
-      - SPLUNK_PASSWORD
-    ports:
-      - 8000
-      - 8089
-    volumes:
-      - ./default.yml:/tmp/defaults/default.yml
+  # sh2:
+  #   networks:
+  #     splunknet:
+  #       aliases:
+  #         - sh2
+  #   image: ${SPLUNK_IMAGE:-splunk/splunk:latest}
+  #   hostname: sh2
+  #   container_name: sh2
+  #   environment:
+  #     - SPLUNK_START_ARGS=--accept-license
+  #     - SPLUNK_INDEXER_URL=idx1,idx2,idx3
+  #     - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
+  #     - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
+  #     - SPLUNK_CLUSTER_MASTER_URL=cm1
+  #     - SPLUNK_ROLE=splunk_search_head
+  #     - SPLUNK_DEPLOYER_URL=dep1
+  #     - SPLUNK_PASSWORD
+  #   ports:
+  #     - 8000
+  #     - 8089
+  #   volumes:
+  #     - ./default.yml:/tmp/defaults/default.yml
+
+  # sh3:
+  #   networks:
+  #     splunknet:
+  #       aliases:
+  #         - sh3
+  #   image: ${SPLUNK_IMAGE:-splunk/splunk:latest}
+  #   hostname: sh3
+  #   container_name: sh3
+  #   environment:
+  #     - SPLUNK_START_ARGS=--accept-license
+  #     - SPLUNK_INDEXER_URL=idx1,idx2,idx3
+  #     - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
+  #     - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
+  #     - SPLUNK_CLUSTER_MASTER_URL=cm1
+  #     - SPLUNK_ROLE=splunk_search_head
+  #     - SPLUNK_DEPLOYER_URL=dep1
+  #     - SPLUNK_PASSWORD
+  #   ports:
+  #     - 8000
+  #     - 8089
+  #   volumes:
+  #     - ./default.yml:/tmp/defaults/default.yml
 
   dep1:
     networks:
@@ -86,8 +84,7 @@ services:
     environment:
       - SPLUNK_START_ARGS=--accept-license
       - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
+      - SPLUNK_SEARCH_HEAD_URL=sh1
       - SPLUNK_CLUSTER_MASTER_URL=cm1
       - SPLUNK_ROLE=splunk_deployer
       - SPLUNK_DEPLOYER_URL=dep1
@@ -109,8 +106,7 @@ services:
     environment:
       - SPLUNK_START_ARGS=--accept-license
       - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
+      - SPLUNK_SEARCH_HEAD_URL=sh1
       - SPLUNK_CLUSTER_MASTER_URL=cm1
       - SPLUNK_ROLE=splunk_cluster_master
       - SPLUNK_DEPLOYER_URL=dep1
@@ -132,8 +128,7 @@ services:
     environment:
       - SPLUNK_START_ARGS=--accept-license
       - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
+      - SPLUNK_SEARCH_HEAD_URL=sh1
       - SPLUNK_CLUSTER_MASTER_URL=cm1
       - SPLUNK_ROLE=splunk_indexer
       - SPLUNK_DEPLOYER_URL=dep1
@@ -155,8 +150,7 @@ services:
     environment:
       - SPLUNK_START_ARGS=--accept-license
       - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
+      - SPLUNK_SEARCH_HEAD_URL=sh1
       - SPLUNK_CLUSTER_MASTER_URL=cm1
       - SPLUNK_ROLE=splunk_indexer
       - SPLUNK_DEPLOYER_URL=dep1
@@ -178,8 +172,7 @@ services:
     environment:
       - SPLUNK_START_ARGS=--accept-license
       - SPLUNK_INDEXER_URL=idx1,idx2,idx3
-      - SPLUNK_SEARCH_HEAD_URL=sh2,sh3
-      - SPLUNK_SEARCH_HEAD_CAPTAIN_URL=sh1
+      - SPLUNK_SEARCH_HEAD_URL=sh1
       - SPLUNK_CLUSTER_MASTER_URL=cm1
       - SPLUNK_ROLE=splunk_indexer
       - SPLUNK_DEPLOYER_URL=dep1
