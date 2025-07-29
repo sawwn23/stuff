@@ -44,6 +44,12 @@ class Rapid7VulnExporter:
             print("   Edit the CONFIG['api_key'] value in this script")
             sys.exit(1)
     
+    def _set_output_filename(self):
+        """Set output filename with current date if not specified."""
+        if not self.config.get('output_csv'):
+            current_date = datetime.now().strftime("%y-%m-%d")
+            self.config['output_csv'] = f"export-{current_date}.csv"
+    
     def _setup_session(self) -> requests.Session:
         """Setup HTTP session with authentication."""
         session = requests.Session()
