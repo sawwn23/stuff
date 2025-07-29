@@ -9,6 +9,7 @@ vulnerability management with comprehensive Excel/Power BI ready output!
 """
 
 import requests
+from requests.auth import HTTPBasicAuth
 import pandas as pd
 import json
 import sys
@@ -19,8 +20,17 @@ import time
 # ─── CONFIGURATION ──────────────────────────────────────────────────────────────
 
 CONFIG = {
+    # Cloud API (v4) Configuration
     'api_key': "YOUR_API_KEY",  # Replace with your actual API key
     'base_url': "https://us.api.insight.rapid7.com/vm/v4",  # Change region if needed
+    
+    # On-premise API (v3) Configuration for detailed vulnerability data
+    'v3_enabled': False,               # Enable v3 API for detailed vulnerability data
+    'v3_console_url': "https://your-console:3780",  # Your InsightVM console URL
+    'v3_username': "your_username",    # Console username
+    'v3_password': "your_password",    # Console password
+    
+    # General Configuration
     'max_assets': 100,                  # Number of assets to process (for testing use 10–50)
     'include_exploit': True,           # Include exploit title if found
     'include_solution': True,          # Include solution summary
@@ -35,6 +45,7 @@ class Rapid7VulnExporter:
         self._validate_config()
         self._set_output_filename()
         self.session = self._setup_session()
+        self.v3_session = self._setup_v3_session() if self.config.get('v3_enabled') else None
         self.vulnerabilities = []
         
     def _validate_config(self):
@@ -51,10 +62,20 @@ class Rapid7VulnExporter:
             self.config['output_csv'] = f"export-{current_date}.csv"
     
     def _setup_session(self) -> requests.Session:
-        """Setup HTTP session with authentication."""
+        """Setup HTTP session with authentication for v4 Cloud API."""
         session = requests.Session()
         session.headers.update({
             'X-Api-Key': self.config['api_key'],
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        })
+        return session
+    
+    def _setup_v3_session(self) -> requests.Session:
+        """Setup HTTP session with Basic Auth for v3 On-premise API."""
+        session = requests.Session()
+        session.auth = HTTPBasicAuth(self.config['v3_username'], self.config['v3_password'])
+        session.headers.update({
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         })
@@ -154,12 +175,31 @@ class Rapid7VulnExporter:
         os_info = asset.get('os_description', 'Unknown')
         tags = ', '.join([tag.get('name', '') for tag in asset.get('tags', [])])
         asset_criticality = self.determine_asset_criticality(tags)
+        asset_id = asset.get('id')
         
         # Get vulnerability counts from asset summary
         critical_count = asset.get('critical_vulnerabilities', 0)
         severe_count = asset.get('severe_vulnerabilities', 0)  # This is "High" in InsightVM
         risk_score = asset.get('risk_score', 0)
         
+        # If v3 API is enabled, get detailed vulnerability data
+        if self.config.get('v3_enabled') and asset_id:
+            v3_vulnerabilities = self.get_v3_asset_vulnerabilities(asset_id)
+            
+            for v3_vuln in v3_vulnerabilities:
+                # Get additional details for each vulnerability
+                vuln_id = v3_vuln.get('id')
+                vuln_details = self.get_v3_vulnerability_details(vuln_id)
+                
+                vuln_data = self.create_v3_vulnerability_record(
+                    hostname, ip_address, os_info, tags, asset_criticality,
+                    v3_vuln, vuln_details, risk_score
+                )
+                vulnerabilities.append(vuln_data)
+            
+            return vulnerabilities
+        
+        # Fallback to v4 API data processing
         # Process new vulnerabilities (recently discovered)
         new_vulns = asset.get('new', [])
         for vuln in new_vulns:
@@ -273,6 +313,73 @@ class Rapid7VulnExporter:
         else:
             return 'Unknown'
     
+    def _make_v3_request(self, endpoint: str, params: Dict = None) -> Dict:
+        """Make authenticated GET API request to v3 on-premise API."""
+        if not self.v3_session:
+            return {}
+            
+        url = f"{self.config['v3_console_url']}/api/3{endpoint}"
+        
+        try:
+            response = self.v3_session.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            print(f"WARNING: v3 API request failed for {endpoint}: {e}")
+            return {}
+        except requests.exceptions.RequestException as e:
+            print(f"WARNING: v3 API request failed for {endpoint}: {e}")
+            return {}
+    
+    def get_v3_asset_vulnerabilities(self, asset_id: str) -> List[Dict]:
+        """Get detailed vulnerability data from v3 API for an asset."""
+        if not self.config.get('v3_enabled'):
+            return []
+            
+        print(f"      Fetching detailed vulnerabilities from v3 API...")
+        
+        vulnerabilities = []
+        page = 0
+        size = 500
+        
+        while True:
+            params = {
+                'page': page,
+                'size': size
+            }
+            
+            response = self._make_v3_request(f'/assets/{asset_id}/vulnerabilities', params)
+            
+            if not response.get('resources'):
+                break
+                
+            batch_vulns = response['resources']
+            vulnerabilities.extend(batch_vulns)
+            
+            # Check if we have more pages
+            if len(batch_vulns) < size:
+                break
+                
+            page += 1
+            time.sleep(0.05)  # Rate limiting
+        
+        return vulnerabilities
+    
+    def get_v3_vulnerability_details(self, vuln_id: str) -> Dict:
+        """Get detailed vulnerability information from v3 API."""
+        if not self.config.get('v3_enabled'):
+            return {}
+            
+        return self._make_v3_request(f'/vulnerabilities/{vuln_id}')
+    
+    def get_v3_vulnerability_solutions(self, vuln_id: str) -> List[Dict]:
+        """Get vulnerability solutions from v3 API."""
+        if not self.config.get('v3_enabled'):
+            return []
+            
+        response = self._make_v3_request(f'/vulnerabilities/{vuln_id}/solutions')
+        return response.get('resources', [])
+    
     def create_vulnerability_record(self, hostname: str, ip_address: str, os_info: str, 
                                   tags: str, asset_criticality: str, vuln: Dict, 
                                   status: str, risk_score: float) -> Dict:
@@ -341,6 +448,68 @@ class Rapid7VulnExporter:
             'Exploit Available': 'Unknown',
             'Exploit Title': None,
             'Solution': f'Review and remediate {count} {severity.lower()} vulnerabilities on this asset'
+        }
+    
+    def create_v3_vulnerability_record(self, hostname: str, ip_address: str, os_info: str,
+                                     tags: str, asset_criticality: str, v3_vuln: Dict,
+                                     vuln_details: Dict, risk_score: float) -> Dict:
+        """Create a vulnerability record from v3 API data with enhanced details."""
+        vuln_id = v3_vuln.get('id', 'Unknown')
+        
+        # Get basic vulnerability info
+        status = v3_vuln.get('status', 'Open')
+        first_discovered = v3_vuln.get('first', {}).get('date')
+        last_seen = v3_vuln.get('most_recently', {}).get('date')
+        
+        # Get detailed vulnerability info from vuln_details
+        cve = vuln_details.get('cve', vuln_id)
+        title = vuln_details.get('title', 'Unknown')
+        severity = vuln_details.get('severity', 'Unknown')
+        cvss_score = vuln_details.get('cvss', {}).get('v2', {}).get('score', 0)
+        categories = ', '.join(vuln_details.get('categories', []))
+        description = vuln_details.get('description', {}).get('text', '')
+        
+        # Calculate additional fields
+        vuln_age_days = self.calculate_vulnerability_age(first_discovered)
+        remediation_days = None
+        if status.lower() in ['fixed', 'remediated']:
+            remediation_days = self.calculate_remediation_days(first_discovered, last_seen)
+        
+        # Get solutions from v3 API if enabled
+        solutions = []
+        if self.config.get('include_solution'):
+            solutions = self.get_v3_vulnerability_solutions(vuln_id)
+        
+        solution_text = ''
+        if solutions:
+            solution_text = solutions[0].get('summary', '') if solutions else ''
+        
+        # Check for exploits (simplified - v3 API has different structure)
+        exploit_available = 'Unknown'
+        exploit_title = None
+        
+        return {
+            'Hostname': hostname,
+            'IP': ip_address,
+            'OS': os_info,
+            'Tags': tags,
+            'Asset Criticality': asset_criticality,
+            'CVE': cve,
+            'Title': title,
+            'Severity': severity,
+            'CVSS': cvss_score,
+            'Risk Score': risk_score,
+            'Status': status,
+            'Categories': categories,
+            'First Discovered': first_discovered,
+            'Vulnerability Age (Days)': vuln_age_days,
+            'Fixed At': last_seen if status.lower() in ['fixed', 'remediated'] else None,
+            'Remediation Days': remediation_days,
+            'Patch Available': 'Yes' if solution_text else 'No',
+            'Exploit Available': exploit_available,
+            'Exploit Title': exploit_title,
+            'Solution': solution_text,
+            'Description': description[:200] + '...' if len(description) > 200 else description
         }
     
     def process_assets(self):
@@ -423,8 +592,15 @@ class Rapid7VulnExporter:
     def run(self):
         """Main execution method."""
         print("Starting Rapid7 InsightVM Vulnerability Export")
-        print(f"   Base URL: {self.config['base_url']}")
+        print(f"   Cloud API (v4): {self.config['base_url']}")
         print(f"   Max assets: {self.config['max_assets']}")
+        
+        if self.config.get('v3_enabled'):
+            print(f"   On-premise API (v3): {self.config['v3_console_url']}/api/3")
+            print("   Hybrid mode: Using v4 for assets + v3 for detailed vulnerabilities")
+        else:
+            print("   Cloud-only mode: Using v4 API only")
+            
         print(f"   Include exploits: {self.config['include_exploit']}")
         print(f"   Include solutions: {self.config['include_solution']}")
         print(f"   Calculate remediation time: {self.config['calculate_remediation_time']}")
