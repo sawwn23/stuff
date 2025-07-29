@@ -101,3 +101,5 @@ vendor/
 *.jks
 *.keystore
 *.truststore
+
+*.json
