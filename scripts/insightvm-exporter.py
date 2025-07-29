@@ -5,7 +5,7 @@ Rapid7 InsightVM Vulnerability Export Tool
 Extracts critical & high-severity vulnerabilities per asset from Rapid7 InsightVM Cloud API,
 enriches with exploit and solution data, calculates remediation time, and exports to CSV.
 
-🎯 Perfect for vulnerability management with comprehensive Excel/Power BI ready output!
+vulnerability management with comprehensive Excel/Power BI ready output!
 """
 
 import requests
@@ -25,7 +25,7 @@ CONFIG = {
     'include_exploit': True,           # Include exploit title if found
     'include_solution': True,          # Include solution summary
     'calculate_remediation_time': True, # Add fix time in days
-    'output_csv': "vuln_export.csv"    # Output file name
+    'output_csv': None                 # Will be auto-generated with date
 }
 
 class Rapid7VulnExporter:
@@ -33,13 +33,14 @@ class Rapid7VulnExporter:
         """Initialize the exporter with configuration."""
         self.config = config or CONFIG
         self._validate_config()
+        self._set_output_filename()
         self.session = self._setup_session()
         self.vulnerabilities = []
         
     def _validate_config(self):
         """Validate configuration settings."""
         if not self.config.get('api_key') or self.config['api_key'] == "YOUR_API_KEY":
-            print("❌ Please set your API key in the CONFIG dictionary")
+            print("ERROR: Please set your API key in the CONFIG dictionary")
             print("   Edit the CONFIG['api_key'] value in this script")
             sys.exit(1)
     
@@ -54,7 +55,7 @@ class Rapid7VulnExporter:
         return session
     
     def _make_request(self, endpoint: str, params: Dict = None) -> Dict:
-        """Make authenticated API request with error handling."""
+        """Make authenticated GET API request with error handling."""
         url = f"{self.config['base_url']}{endpoint}"
         
         try:
@@ -63,33 +64,61 @@ class Rapid7VulnExporter:
             return response.json()
         except requests.exceptions.HTTPError as e:
             if response.status_code == 401:
-                print("❌ Authentication failed. Check your API key.")
+                print("ERROR: Authentication failed. Check your API key.")
             elif response.status_code == 403:
-                print("❌ Access forbidden. Check your permissions.")
+                print("ERROR: Access forbidden. Check your permissions.")
             elif response.status_code == 404:
-                print(f"❌ Endpoint not found: {endpoint}")
+                print(f"ERROR: Endpoint not found: {endpoint}")
             else:
-                print(f"❌ HTTP Error {response.status_code}: {e}")
+                print(f"ERROR: HTTP Error {response.status_code}: {e}")
             sys.exit(1)
         except requests.exceptions.RequestException as e:
-            print(f"❌ Request failed: {e}")
+            print(f"ERROR: Request failed: {e}")
+            sys.exit(1)
+    
+    def _make_request_post(self, endpoint: str, params: Dict = None, body: Dict = None) -> Dict:
+        """Make authenticated POST API request with error handling."""
+        url = f"{self.config['base_url']}{endpoint}"
+        
+        try:
+            response = self.session.post(url, params=params, json=body)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 401:
+                print("ERROR: Authentication failed. Check your API key.")
+            elif response.status_code == 403:
+                print("ERROR: Access forbidden. Check your permissions.")
+            elif response.status_code == 404:
+                print(f"ERROR: Endpoint not found: {endpoint}")
+            else:
+                print(f"ERROR: HTTP Error {response.status_code}: {e}")
+                print(f"Response: {response.text}")
+            sys.exit(1)
+        except requests.exceptions.RequestException as e:
+            print(f"ERROR: Request failed: {e}")
             sys.exit(1)
     
     def get_assets(self) -> List[Dict]:
-        """Fetch assets from the API."""
-        print("🔍 Fetching assets...")
+        """Fetch assets from the API using the correct integration endpoint."""
+        print("INFO: Fetching assets with vulnerabilities...")
         
         assets = []
         page = 0
         size = min(500, self.config['max_assets'])  # API max page size is 500
         
         while len(assets) < self.config['max_assets']:
+            # Prepare the search query for critical and high vulnerabilities
+            search_body = {
+                "vulnerability": "severity IN ['Critical', 'Severe']"  # Critical = Critical, Severe = High
+            }
+            
             params = {
                 'page': page,
                 'size': min(size, self.config['max_assets'] - len(assets))
             }
             
-            response = self._make_request('/assets', params)
+            response = self._make_request_post('/integration/assets', params, search_body)
             
             if not response.get('data'):
                 break
@@ -106,36 +135,58 @@ class Rapid7VulnExporter:
             page += 1
             time.sleep(0.1)  # Rate limiting
         
-        print(f"✅ Retrieved {len(assets)} assets")
+        print(f"SUCCESS: Retrieved {len(assets)} assets with vulnerabilities")
         return assets[:self.config['max_assets']]
     
-    def get_asset_vulnerabilities(self, asset_id: str) -> List[Dict]:
-        """Fetch critical and high vulnerabilities for a specific asset."""
-        endpoint = f"/assets/{asset_id}/vulnerabilities"
-        params = {
-            'severity': 'CRITICAL,HIGH',
-            'size': 500  # Max page size
-        }
-        
+    def extract_vulnerabilities_from_asset(self, asset: Dict) -> List[Dict]:
+        """Extract vulnerability information from asset data."""
         vulnerabilities = []
-        page = 0
         
-        while True:
-            params['page'] = page
-            response = self._make_request(endpoint, params)
+        # Get basic asset info
+        hostname = asset.get('host_name', 'Unknown')
+        ip_address = asset.get('ip', 'Unknown')
+        os_info = asset.get('os_description', 'Unknown')
+        tags = ', '.join([tag.get('name', '') for tag in asset.get('tags', [])])
+        asset_criticality = self.determine_asset_criticality(tags)
+        
+        # Get vulnerability counts from asset summary
+        critical_count = asset.get('critical_vulnerabilities', 0)
+        severe_count = asset.get('severe_vulnerabilities', 0)  # This is "High" in InsightVM
+        risk_score = asset.get('risk_score', 0)
+        
+        # Process new vulnerabilities (recently discovered)
+        new_vulns = asset.get('new', [])
+        for vuln in new_vulns:
+            vuln_data = self.create_vulnerability_record(
+                hostname, ip_address, os_info, tags, asset_criticality,
+                vuln, 'New', risk_score
+            )
+            vulnerabilities.append(vuln_data)
+        
+        # Process remediated vulnerabilities (recently fixed)
+        remediated_vulns = asset.get('remediated', [])
+        for vuln in remediated_vulns:
+            vuln_data = self.create_vulnerability_record(
+                hostname, ip_address, os_info, tags, asset_criticality,
+                vuln, 'Remediated', risk_score
+            )
+            vulnerabilities.append(vuln_data)
+        
+        # If no specific vulnerability details but we have counts, create summary records
+        if not vulnerabilities and (critical_count > 0 or severe_count > 0):
+            if critical_count > 0:
+                summary_vuln = self.create_summary_vulnerability_record(
+                    hostname, ip_address, os_info, tags, asset_criticality,
+                    'Critical', critical_count, risk_score
+                )
+                vulnerabilities.append(summary_vuln)
             
-            if not response.get('data'):
-                break
-                
-            batch_vulns = response['data']
-            vulnerabilities.extend(batch_vulns)
-            
-            # Check if we have more pages
-            if len(batch_vulns) < 500:
-                break
-                
-            page += 1
-            time.sleep(0.05)  # Rate limiting
+            if severe_count > 0:
+                summary_vuln = self.create_summary_vulnerability_record(
+                    hostname, ip_address, os_info, tags, asset_criticality,
+                    'High', severe_count, risk_score
+                )
+                vulnerabilities.append(summary_vuln)
         
         return vulnerabilities
     
@@ -216,84 +267,104 @@ class Rapid7VulnExporter:
         else:
             return 'Unknown'
     
+    def create_vulnerability_record(self, hostname: str, ip_address: str, os_info: str, 
+                                  tags: str, asset_criticality: str, vuln: Dict, 
+                                  status: str, risk_score: float) -> Dict:
+        """Create a vulnerability record from asset vulnerability data."""
+        vuln_id = vuln.get('id', 'Unknown')
+        cve = vuln.get('cve', vuln_id)
+        title = vuln.get('title', 'Unknown')
+        severity = vuln.get('severity', 'Unknown')
+        cvss = vuln.get('cvss_score', 0)
+        first_discovered = vuln.get('first_discovered')
+        fixed_at = vuln.get('fixed_at') if status == 'Remediated' else None
+        
+        # Calculate additional fields
+        vuln_age_days = self.calculate_vulnerability_age(first_discovered)
+        remediation_days = self.calculate_remediation_days(first_discovered, fixed_at)
+        
+        # Get enrichment data if enabled
+        solution = self.get_vulnerability_solutions(vuln_id) if self.config.get('include_solution') else None
+        exploit = self.get_vulnerability_exploits(vuln_id) if self.config.get('include_exploit') else None
+        
+        return {
+            'Hostname': hostname,
+            'IP': ip_address,
+            'OS': os_info,
+            'Tags': tags,
+            'Asset Criticality': asset_criticality,
+            'CVE': cve,
+            'Title': title,
+            'Severity': severity,
+            'CVSS': cvss,
+            'Risk Score': risk_score,
+            'Status': status,
+            'Categories': vuln.get('categories', ''),
+            'First Discovered': first_discovered,
+            'Vulnerability Age (Days)': vuln_age_days,
+            'Fixed At': fixed_at,
+            'Remediation Days': remediation_days,
+            'Patch Available': 'Yes' if solution else 'No',
+            'Exploit Available': 'Yes' if exploit else 'No',
+            'Exploit Title': exploit,
+            'Solution': solution
+        }
+    
+    def create_summary_vulnerability_record(self, hostname: str, ip_address: str, os_info: str,
+                                          tags: str, asset_criticality: str, severity: str,
+                                          count: int, risk_score: float) -> Dict:
+        """Create a summary vulnerability record when detailed data isn't available."""
+        return {
+            'Hostname': hostname,
+            'IP': ip_address,
+            'OS': os_info,
+            'Tags': tags,
+            'Asset Criticality': asset_criticality,
+            'CVE': f'SUMMARY-{severity}',
+            'Title': f'{count} {severity} vulnerabilities found',
+            'Severity': severity,
+            'CVSS': 0,
+            'Risk Score': risk_score,
+            'Status': 'Open',
+            'Categories': 'Summary',
+            'First Discovered': None,
+            'Vulnerability Age (Days)': None,
+            'Fixed At': None,
+            'Remediation Days': None,
+            'Patch Available': 'Unknown',
+            'Exploit Available': 'Unknown',
+            'Exploit Title': None,
+            'Solution': f'Review and remediate {count} {severity.lower()} vulnerabilities on this asset'
+        }
+    
     def process_assets(self):
         """Process all assets and extract vulnerability data."""
         assets = self.get_assets()
         
-        print(f"🔍 Processing vulnerabilities for {len(assets)} assets...")
+        print(f"INFO: Processing vulnerabilities for {len(assets)} assets...")
         
         for i, asset in enumerate(assets, 1):
-            asset_id = asset.get('id')
-            hostname = asset.get('hostName', 'Unknown')
-            ip_address = asset.get('ipAddress', 'Unknown')
-            os_info = asset.get('operatingSystem', {}).get('description', 'Unknown')
-            tags = ', '.join([tag.get('name', '') for tag in asset.get('tags', [])])
+            hostname = asset.get('host_name', 'Unknown')
+            ip_address = asset.get('ip', 'Unknown')
             
             print(f"   [{i}/{len(assets)}] Processing {hostname} ({ip_address})")
             
-            # Get vulnerabilities for this asset
-            vulnerabilities = self.get_asset_vulnerabilities(asset_id)
-            
-            for vuln in vulnerabilities:
-                vuln_id = vuln.get('id')
-                cve = vuln.get('cve', vuln_id)  # Use vuln ID if no CVE
-                title = vuln.get('title', 'Unknown')
-                severity = vuln.get('severity', 'Unknown')
-                cvss = vuln.get('cvssScore')
-                first_discovered = vuln.get('firstDiscovered')
-                fixed_at = vuln.get('fixedAt')
-                
-                # Get enrichment data
-                solution = self.get_vulnerability_solutions(vuln_id)
-                exploit = self.get_vulnerability_exploits(vuln_id)
-                remediation_days = self.calculate_remediation_days(first_discovered, fixed_at)
-                
-                # Calculate additional vulnerability management fields
-                vuln_age_days = self.calculate_vulnerability_age(first_discovered)
-                status = vuln.get('status', 'Open')
-                risk_score = vuln.get('riskScore', 0)
-                categories = ', '.join(vuln.get('categories', []))
-                patch_available = 'Yes' if solution else 'No'
-                
-                # Determine asset criticality from tags
-                asset_criticality = self.determine_asset_criticality(tags)
-                
-                # Add to results
-                self.vulnerabilities.append({
-                    'Hostname': hostname,
-                    'IP': ip_address,
-                    'OS': os_info,
-                    'Tags': tags,
-                    'Asset Criticality': asset_criticality,
-                    'CVE': cve,
-                    'Title': title,
-                    'Severity': severity,
-                    'CVSS': cvss,
-                    'Risk Score': risk_score,
-                    'Status': status,
-                    'Categories': categories,
-                    'First Discovered': first_discovered,
-                    'Vulnerability Age (Days)': vuln_age_days,
-                    'Fixed At': fixed_at,
-                    'Remediation Days': remediation_days,
-                    'Patch Available': patch_available,
-                    'Exploit Available': 'Yes' if exploit else 'No',
-                    'Exploit Title': exploit,
-                    'Solution': solution
-                })
+            # Extract vulnerabilities from this asset
+            asset_vulnerabilities = self.extract_vulnerabilities_from_asset(asset)
+            self.vulnerabilities.extend(asset_vulnerabilities)
             
             # Rate limiting
             time.sleep(0.1)
         
-        print(f"✅ Processed {len(self.vulnerabilities)} vulnerabilities")
+        print(f"SUCCESS: Processed {len(self.vulnerabilities)} vulnerability records")
     
     def export_to_csv(self):
         """Export vulnerability data to CSV file."""
         if not self.vulnerabilities:
-            print("❌ No vulnerabilities to export")
+            print("WARNING: No vulnerabilities to export")
             return
         
-        print(f"📤 Exporting to {self.config['output_csv']}...")
+        print(f"INFO: Exporting to {self.config['output_csv']}...")
         
         # Create DataFrame
         df = pd.DataFrame(self.vulnerabilities)
@@ -307,10 +378,10 @@ class Rapid7VulnExporter:
         # Export to CSV
         df.to_csv(self.config['output_csv'], index=False)
         
-        print(f"✅ Exported {len(df)} vulnerabilities to {self.config['output_csv']}")
+        print(f"SUCCESS: Exported {len(df)} vulnerabilities to {self.config['output_csv']}")
         
         # Print summary statistics
-        print("\n📊 Vulnerability Management Summary:")
+        print("\nVulnerability Management Summary:")
         print(f"   Total vulnerabilities: {len(df)}")
         print(f"   Critical: {len(df[df['Severity'] == 'CRITICAL'])}")
         print(f"   High: {len(df[df['Severity'] == 'HIGH'])}")
@@ -345,7 +416,7 @@ class Rapid7VulnExporter:
     
     def run(self):
         """Main execution method."""
-        print("🚀 Starting Rapid7 InsightVM Vulnerability Export")
+        print("Starting Rapid7 InsightVM Vulnerability Export")
         print(f"   Base URL: {self.config['base_url']}")
         print(f"   Max assets: {self.config['max_assets']}")
         print(f"   Include exploits: {self.config['include_exploit']}")
@@ -356,19 +427,19 @@ class Rapid7VulnExporter:
         try:
             self.process_assets()
             self.export_to_csv()
-            print("\n🎉 Export completed successfully!")
+            print("\nSUCCESS: Export completed successfully!")
         except KeyboardInterrupt:
-            print("\n⚠️  Export interrupted by user")
+            print("\nWARNING: Export interrupted by user")
             sys.exit(1)
         except Exception as e:
-            print(f"\n❌ Export failed: {e}")
+            print(f"\nERROR: Export failed: {e}")
             sys.exit(1)
 
 def main():
     """Main entry point."""
     print("=" * 60)
-    print("🎯 RAPID7 INSIGHTVM VULNERABILITY MANAGEMENT EXPORT")
-    print("   Extract, enrich, and export vulnerabilities to Excel/Power BI")
+    print("RAPID7 INSIGHTVM VULNERABILITY MANAGEMENT EXPORT")
+    print("Extract, enrich, and export vulnerabilities to Excel/Power BI")
     print("=" * 60)
     print()
     
