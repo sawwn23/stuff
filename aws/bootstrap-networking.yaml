@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Simple Spoke VPC with Transit Gateway Attachment for Lab Environment
+
+Parameters:
+  TransitGatewayId:
+    Type: String
+    Description: Transit Gateway ID from Networking Account (e.g., tgw-xxxxxxxx)
+    AllowedPattern: ^tgw-[0-9a-f]{8,17}$
+    ConstraintDescription: Must be a valid Transit Gateway ID
+
+  VpcCidr:
+    Type: String
+    Default: 10.1.0.0/16
+    Description: CIDR block for Spoke VPC
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: Must be a valid IP CIDR range
+
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.1.1.0/24
+    Description: CIDR block for public subnet in spoke VPC
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: Must be a valid IP CIDR range
+
+Resources:
+  # VPC
+  SpokeVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: sanbox-spoke-vpc
+        - Key: Environment
+          Value: lab
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: sandbox-spoke-igw
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref SpokeVPC
+
+  # Public Subnet
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SpokeVPC
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: sandbox-public-subnet
+
+  # Transit Gateway Attachment
+  TransitGatewayAttachment:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGatewayId
+      VpcId: !Ref SpokeVPC
+      SubnetIds:
+        - !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: sandbox-spoke-tgw-attachment
+
+  # Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SpokeVPC
+      Tags:
+        - Key: Name
+          Value: sandbox-public-rt
+
+  # Route Table Association
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  # Routes
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Route private networks through Transit Gateway
+  PrivateNetworkRouteToTGW:
+    Type: AWS::EC2::Route
+    DependsOn: TransitGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 10.0.0.0/8
+      TransitGatewayId: !Ref TransitGatewayId
+
+Outputs:
+  SpokeVpcId:
+    Description: Spoke VPC ID for Lab
+    Value: !Ref SpokeVPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+
+  PublicSubnetId:
+    Description: Public Subnet ID
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetId"
+
+  TransitGatewayAttachmentId:
+    Description: Transit Gateway VPC Attachment ID
+    Value: !Ref TransitGatewayAttachment
+    Export:
+      Name: !Sub "${AWS::StackName}-TGWAttachmentId"
+
+  VpcCidr:
+    Description: VPC CIDR Block
+    Value: !Ref VpcCidr
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcCidr"
