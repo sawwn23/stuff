@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: NAT EC2 Instance for Lab VPC - provides NAT functionality for private subnets
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: VPC ID where NAT instance will be deployed
+    AllowedPattern: ^vpc-[0-9a-f]{8,17}$
+    ConstraintDescription: Must be a valid VPC ID
+
+  PublicSubnetId:
+    Type: String
+    Description: Public subnet ID where NAT instance will be deployed
+    AllowedPattern: ^subnet-[0-9a-f]{8,17}$
+    ConstraintDescription: Must be a valid Subnet ID
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type for NAT instance
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t4g.micro
+      - t4g.small
+      - t4g.medium
+    ConstraintDescription: Must be a valid EC2 instance type
+
+  KeyPairName:
+    Type: String
+    Description: EC2 Key Pair name for SSH access (optional)
+    Default: ""
+
+  AllowedSshCidr:
+    Type: String
+    Default: 10.0.0.0/8
+    Description: CIDR block allowed for SSH access to NAT instance
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: Must be a valid IP CIDR range
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
+
+Mappings:
+  # Amazon Linux 2023 AMI IDs for NAT functionality
+  RegionMap:
+    us-east-1:
+      AMI: ami-0c02fb55956c7d316
+    us-east-2:
+      AMI: ami-0f924dc71d44d23e2
+    us-west-1:
+      AMI: ami-0d53d72369335a9d6
+    us-west-2:
+      AMI: ami-008fe2fc65df48dac
+    ca-central-1:
+      AMI: ami-0c3d3a230b9668c02
+    eu-west-1:
+      AMI: ami-01dd271720c1ba44f
+    eu-west-2:
+      AMI: ami-0a7493ba2bc35c1e9
+    eu-central-1:
+      AMI: ami-0e067cc8a2b58de59
+    ap-southeast-1:
+      AMI: ami-0c802847a7dd848c0
+    ap-southeast-2:
+      AMI: ami-0310483fb2b488153
+    ap-northeast-1:
+      AMI: ami-0d52744d6551d851e
+
+Resources:
+  # Security Group for NAT Instance
+  NATSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for NAT EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow HTTP traffic from private subnets
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 10.0.0.0/8
+          Description: HTTP from private networks
+        # Allow HTTPS traffic from private subnets
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/8
+          Description: HTTPS from private networks
+        # Allow all traffic from VPC for NAT functionality
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/8
+          Description: All traffic from private networks for NAT
+        # Allow SSH from specified CIDR
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+          Description: SSH access
+      SecurityGroupEgress:
+        # Allow all outbound traffic
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: nat-instance-sg
+        - Key: Environment
+          Value: lab
+
+  # IAM Role for NAT Instance
+  NATInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: nat-instance-role
+        - Key: Environment
+          Value: lab
+
+  # Instance Profile for NAT Instance
+  NATInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref NATInstanceRole
+
+  # NAT EC2 Instance
+  NATInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: !Ref InstanceType
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
+      SubnetId: !Ref PublicSubnetId
+      SecurityGroupIds:
+        - !Ref NATSecurityGroup
+      IamInstanceProfile: !Ref NATInstanceProfile
+      SourceDestCheck: false # Critical for NAT functionality
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+
+          # Enable IP forwarding
+          echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
+          sysctl -p
+
+          # Configure iptables for NAT
+          iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+          iptables -A FORWARD -i eth0 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+          iptables -A FORWARD -i eth0 -o eth0 -j ACCEPT
+
+          # Save iptables rules
+          iptables-save > /etc/iptables.rules
+
+          # Create script to restore iptables on boot
+          cat > /etc/rc.local << 'EOF'
+          #!/bin/bash
+          iptables-restore < /etc/iptables.rules
+          exit 0
+          EOF
+          chmod +x /etc/rc.local
+
+          # Install CloudWatch agent
+          yum install -y amazon-cloudwatch-agent
+
+          # Create a simple health check script
+          cat > /home/ec2-user/nat-health-check.sh << 'EOF'
+          #!/bin/bash
+          # Simple NAT health check
+          if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
+            echo "$(date): NAT instance is healthy - internet connectivity OK"
+          else
+            echo "$(date): NAT instance health check failed - no internet connectivity"
+          fi
+          EOF
+          chmod +x /home/ec2-user/nat-health-check.sh
+
+          # Add health check to crontab
+          echo "*/5 * * * * /home/ec2-user/nat-health-check.sh >> /var/log/nat-health.log" | crontab -u ec2-user -
+
+          # Signal CloudFormation that instance is ready
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource NATInstance --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: nat-instance
+        - Key: Environment
+          Value: lab
+        - Key: Purpose
+          Value: NAT
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+
+  # Elastic IP for NAT Instance
+  NATInstanceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref NATInstance
+      Tags:
+        - Key: Name
+          Value: nat-instance-eip
+        - Key: Environment
+          Value: lab
+
+Outputs:
+  NATInstanceId:
+    Description: NAT Instance ID
+    Value: !Ref NATInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-NATInstanceId"
+
+  NATInstancePrivateIP:
+    Description: NAT Instance Private IP Address
+    Value: !GetAtt NATInstance.PrivateIp
+    Export:
+      Name: !Sub "${AWS::StackName}-NATInstancePrivateIP"
+
+  NATInstancePublicIP:
+    Description: NAT Instance Public IP Address (Elastic IP)
+    Value: !Ref NATInstanceEIP
+    Export:
+      Name: !Sub "${AWS::StackName}-NATInstancePublicIP"
+
+  NATSecurityGroupId:
+    Description: Security Group ID for NAT Instance
+    Value: !Ref NATSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-NATSecurityGroupId"
+
+  RouteTableTarget:
+    Description: Use this instance ID as target for private subnet route tables
+    Value: !Ref NATInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-RouteTarget"
