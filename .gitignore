@@ -103,3 +103,13 @@ vendor/
 *.truststore
 
 *.json
+
+# Ignore environment files containing secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
