@@ -1,0 +1,14 @@
+regions:
+  - global
+  - us-east-1
+  - ca-central-1
+
+blocklist: # updated key
+  - "999999999999" # production accounts
+
+bypass-alias-check:
+  - "309921834313" # security account ID
+
+accounts:
+  "309921834313": {}
+
