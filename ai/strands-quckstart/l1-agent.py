@@ -5,6 +5,9 @@ load_dotenv()
 from strands import Agent, tool
 from strands.multiagent import Swarm
 from strands.models.openai import OpenAIModel
+from strands.tools.mcp import MCPClient
+from mcp.client.streamable_http import streamablehttp_client
+from strands.session.file_session_manager import FileSessionManager
 
 
 ## Agent config 
@@ -27,16 +30,37 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
+## create a file session manger to persist agent state across runs
+session_manager = FileSessionManager(storage_dir=".", session_id="l1_agent_session")
+
+## elastic-mcp client config
+MCP_URL = os.getenv("ELASTIC_MCP_URL", "http://172.16.10.105:5601/api/agent_builder/mcp")
+MCP_APIKEY = os.getenv("ELASTIC_MCP_APIKEY")
+
+elastic_mcp_client = MCPClient(
+    lambda: streamablehttp_client(
+        url=MCP_URL,
+        headers={"Authorization": f"ApiKey {MCP_APIKEY}"},
+    )
+)
+elastic_mcp_client.start()
+elastic_tool = elastic_mcp_client.list_tools_sync()
+# # Returns a list of available tools adapted to the AgentTool interface
+# print("Elastic MCP Tools:")
+# for tool in elastic_tool:
+#   print(f"- {tool.tool_name}")
+
 
 initial_agent = Agent(name="initial_agent",
   system_prompt=(
-    "You are a cyber security analyst.(SOC L1 Analyst). Try to summerize and trige the alert given by the user and provide inital investigation(triage) question."),
+    "You are a cyber security analyst.(SOC L1 Analyst). Try to summarize and triage the alert given by the user and provide initial investigation (triage) questions. "
+    "If you determine more specialized follow-up is needed, CALL the swarm coordination tool `handoff_to_agent` to pass control to the correct agent. "
+    "Example (exact usage understood by the orchestration tool): handoff_to_agent('l1_agent', 'Please continue triage, collect artifacts and gather virtualization details', {'reason': 'escalation for artifact collection'})"
+  ),
   model=model )
-query_agent = Agent(name="query_agent",
-  system_prompt=(
-    "You are a cyber security analyst.(SOC L1 Analyst). You will query the Elastic SIEM tools with Elasticsearch Query Language (ES|QL) to get more information about the alert. Given the alert information from the initial agent, generate ES|QL queries to gather more context about the alert. Provide only the ES|QL queries without any additional explanation."),
-  model=model )
-l1_agent = Agent(name="l1_agent",
+l1_agent = Agent(
+  name="l1_agent",
+  tools=elastic_tool,
   system_prompt=(
     "You are a cyber security analyst.(SOC L1 Analyst). You will provide the final analysis report based on the information gathered from the initial agent and query agent."),
   model=model )
@@ -44,7 +68,7 @@ l1_agent = Agent(name="l1_agent",
 
 
 swarm = Swarm(
-  [initial_agent, query_agent, l1_agent],
+  [initial_agent, l1_agent],
     entry_point=initial_agent,
     max_handoffs=10,
     max_iterations=10,
@@ -56,29 +80,16 @@ swarm = Swarm(
 
 # Ask the agent for an analysis of a security alert
 message = """{
-  "rule.name": "M365 Identity – Login from Impossible Travel Location",
-  "@timestamp": "2025-01-15T03:41:22.112Z",
-  "event.category": "authentication",
-  "event.action": "signin_success",
-  "user.name": "saw.naung",
-  "user.id": "AABBCC1122",
-  "source.geo.country_name": "United States",
-  "source.geo.city_name": "Chicago",
-  "source.ip": "23.18.55.91",
-  "related.previous_login": {
-      "timestamp": "2025-01-15T03:15:05.909Z",
-      "source.geo.country_name": "Canada",
-      "source.geo.city_name": "Toronto",
-      "source.ip": "152.199.21.45"
-  },
-  "impossible_travel": {
-    "distance_km": 702,
-    "time_diff_minutes": 26,
-    "required_speed_kmh": 1617,
-    "threshold_kmh": 900,
-    "is_impossible": true
-  },
-  "threat.indicator": "Unusual location jump — potential account takeover"
+Title : "Virtual Machine Fingerprinting"
+Source event:	AZrXM-M3jgoeGott3xeD
+host.name:	ca-server
+agent.status:	Healthy
+user.name:	ubuntu
+process.executable:	/usr/bin/cat
+kibana.alert.rule.type:	query
+process.name:	cat
+process.parent.name:	bash
+process.args:	cat/proc/scsi/scsi
 }"""
 
 result = swarm(message)
@@ -93,13 +104,3 @@ print(f"Status: {result.status}")  # COMPLETED, FAILED, etc.
 for node in result.node_history:
     print(f"Agent: {node.node_id}")
 
-# Get the output from the query agent (guard against it not running)
-if 'query_agent' in result.results:
-  query_result = result.results['query_agent'].result
-  print(f"Query Agent Output:\n{query_result}")
-else:
-  print("query_agent did not run — available agent results:")
-  for agent_name, node in result.results.items():
-    # node may be an object with .result or a plain value — handle both
-    node_result = getattr(node, 'result', node)
-    print(f" - {agent_name}: {node_result}")
