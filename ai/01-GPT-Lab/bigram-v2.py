@@ -5,13 +5,16 @@ import torch.nn.functional as F
 
 ## hyperparameters
 batch_size = 32  # how many independent sequences will we process in parallel?
-block_size = 8   # what is the maximum context length for predictions?
+block_size = 8  # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 500
 learning_rate = 1e-3
 device = 'mps' if torch.backends.mps.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 32  # embedding dimension
+n_head = 6  # number of attention heads
+n_layer = 6  # number of transformer blocks
+dropout = 0.2  # dropout rate
 
 torch.manual_seed(1337)
 
@@ -70,6 +73,8 @@ class Head(nn.Module):
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         B, T, C = x.shape
         k = self.key(x)   # (B,T,head_size)
@@ -80,6 +85,7 @@ class Head(nn.Module):
         wei = wei / (C**0.5)  # scale
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B,T,T)
         wei = F.softmax(wei, dim=-1)  # (B,T,T)
+        wei = self.dropout(wei)
 
         # perform the weighted aggregation of the values
         v = self.value(x)  # (B,T,head_size)
@@ -93,10 +99,12 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(num_heads * head_size, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.proj(out)
+        out = self.dropout(out)
         return out
 
 class FeedForward(nn.Module):
@@ -108,6 +116,7 @@ class FeedForward(nn.Module):
             nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
             nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -128,7 +137,7 @@ class Block(nn.Module):
     def forward(self, x):
         x = x + self.sa_head(x)
         x = x + self.ffwd(x)
-        return xs
+        return x
     
 
 class BigramLanguageModel(nn.Module):
@@ -137,12 +146,7 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            nn.LayerNorm(n_embd),
-        )  # 4 layers of transformer blocks
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd)  # final layer norm
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
@@ -187,6 +191,7 @@ class BigramLanguageModel(nn.Module):
     
 model = BigramLanguageModel(vocab_size)
 model = model.to(device)
+print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 for iter in range(max_iters):
